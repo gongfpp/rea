@@ -31,8 +31,7 @@ export const decodeHarCapture = (
   sensitiveValues: readonly string[],
 ): DecodedCapture => {
   const raw = parseCaptureJson(text, "HAR");
-  const validation = projectHar(raw, [], false);
-  createHarValidator()(validation.reported);
+  createHarValidator()(harValidationCopy(raw));
   if (
     !captureObject(raw) ||
     !captureObject(raw.log) ||
@@ -92,6 +91,31 @@ export const decodeHarCapture = (
     total_records: records.length,
     records,
   };
+};
+
+/**
+ * Project the parsed text for upstream schema validation only.
+ *
+ * Retained evidence deliberately publishes an unsafe producer number as null,
+ * so validating that projection rejects an original HAR number the pinned
+ * schema accepts. This copy keeps every declared number as a JavaScript
+ * number for validation; a lexeme with no finite number is left non-finite so
+ * the schema still refuses it.
+ */
+const harValidationCopy = (value: unknown): unknown => {
+  if (value instanceof LosslessNumber) {
+    const reported = Number(value.value);
+    return Number.isFinite(reported) ? reported : value;
+  }
+  if (Array.isArray(value)) return value.map(harValidationCopy);
+  if (captureObject(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [
+        key,
+        harValidationCopy(child),
+      ]),
+    );
+  return value;
 };
 
 const projectHar = (

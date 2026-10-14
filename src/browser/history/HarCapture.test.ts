@@ -290,7 +290,7 @@ it.each([
   },
 );
 
-it("keeps unsafe extension numeric lexemes and rejects unsafe mandatory schema numbers", () => {
+it("keeps unsafe extension numeric lexemes beside their unknown reported value", () => {
   const text = JSON.stringify(historicalHar());
   const result = decodeHarCapture(
     text.replace('"cache":{}', '"cache":{},"_big":9007199254740993'),
@@ -302,12 +302,49 @@ it("keeps unsafe extension numeric lexemes and rejects unsafe mandatory schema n
     literal: "9007199254740993",
   });
   expect(result.records[0]?.reported).toMatchObject({ _big: null });
-  expect(() =>
-    decodeHarCapture(
-      text.replace('"bodySize":0', '"bodySize":9007199254740993'),
-      [],
-    ),
-  ).toThrow("HAR schema validation failed");
+});
+
+it.each(["0.123456789012345678901", "9007199254740993"])(
+  "admits a valid producer number the evidence cannot represent exactly: %s",
+  (literal) => {
+    const text = JSON.stringify(historicalHar()).replace(
+      '"time":1.25',
+      `"time":${literal}`,
+    );
+    const result = decodeHarCapture(text, []);
+    expect(result.records[0]?.numeric_literals).toContainEqual({
+      pointer: "/time",
+      producer_type: "json-number",
+      literal,
+    });
+    expect(result.records[0]?.reported).toMatchObject({ time: null });
+  },
+);
+
+it("admits an unsafe mandatory schema number as explicitly unknown", () => {
+  const text = JSON.stringify(historicalHar()).replace(
+    '"bodySize":99',
+    '"bodySize":9007199254740993',
+  );
+  const result = decodeHarCapture(text, []);
+  expect(result.records[0]?.numeric_literals).toContainEqual({
+    pointer: "/response/bodySize",
+    producer_type: "json-number",
+    literal: "9007199254740993",
+  });
+  expect(result.records[0]?.reported).toMatchObject({
+    response: { bodySize: null },
+  });
+});
+
+it("rejects a mandatory schema number with no finite representation", () => {
+  const text = JSON.stringify(historicalHar()).replace(
+    '"time":1.25',
+    '"time":1e400',
+  );
+  expect(() => decodeHarCapture(text, [])).toThrow(
+    "HAR schema validation failed",
+  );
 });
 
 it.each(["container", "record"] as const)(
