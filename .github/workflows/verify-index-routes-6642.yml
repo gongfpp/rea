@@ -1,0 +1,90 @@
+name: Verify index-route regression 6642
+
+on:
+  push:
+    branches:
+      - verify/index-route-6642-p2
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Index-route ${{ matrix.revision }} control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [baseline, fixed]
+    env:
+      BASE: 5f702dd6ccd9e8e505e224854b91678439c3b41f
+      FIXED: 5b77e8096b629a8c131d4a12e651daaa52c19651
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select the exact production revision with identical final tests
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          if [ "$REVISION" = baseline ]; then
+            git diff --binary "$BASE" "$FIXED" -- \
+              src/domain/javascript/javascriptRouteScan.test.ts \
+              src/domain/javascript/javascriptRouteInventory.test.ts \
+              tests/acceptance/javascriptRoutesCli.test.ts \
+              > "$RUNNER_TEMP/index-route-regressions.patch"
+            git checkout --detach "$BASE"
+            git apply --check "$RUNNER_TEMP/index-route-regressions.patch"
+            git apply "$RUNNER_TEMP/index-route-regressions.patch"
+            git diff --exit-code -- src/domain/javascript/javascriptRouteScan.ts
+          else
+            git diff --exit-code "$FIXED" -- src tests package.json package-lock.json
+          fi
+          git rev-parse HEAD
+          git hash-object src/domain/javascript/javascriptRouteScan.ts
+          git status --short
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - name: Install the pinned npm and locked dependencies
+        run: |
+          npm install --global npm@11.16.0
+          node --version
+          npm --version
+          npm ci
+      - name: Run the real compiled public CLI and focused source regressions
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          log="$RUNNER_TEMP/index-route-$REVISION.log"
+          set +e
+          npm run test:focused -- \
+            src/domain/javascript/javascriptRouteScan.test.ts \
+            src/domain/javascript/javascriptRouteInventory.test.ts \
+            src/domain/javascript/javascriptRouteResultBudget.test.ts \
+            tests/acceptance/javascriptRoutesCli.test.ts 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$REVISION" = fixed ]; then
+            test "$status" -eq 0
+          else
+            test "$status" -eq 1
+            node --input-type=module - "$log" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const text = readFileSync(process.argv[2], 'utf8').replace(/\x1b\[[0-9;]*m/g, '');
+          assert.match(text, /AssertionError: alias: expected \[\] to deeply equal/);
+          assert.match(text, /20 failed\s*\|\s*278 passed\s*\(298\)/);
+          console.log('Expected negative control: 19 source regressions and the real CLI alias case fail; 278 controls pass.');
+          JS
+          fi
+      - name: Retain the actual test log, including expected baseline failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-route-${{ matrix.revision }}
+          path: ${{ runner.temp }}/index-route-${{ matrix.revision }}.log
+          if-no-files-found: warn
+          retention-days: 7
