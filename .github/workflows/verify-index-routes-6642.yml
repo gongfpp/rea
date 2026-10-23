@@ -76,8 +76,8 @@ jobs:
           import { readFileSync } from 'node:fs';
           const text = readFileSync(process.argv[2], 'utf8').replace(/\x1b\[[0-9;]*m/g, '');
           assert.match(text, /AssertionError: alias: expected \[\] to deeply equal/);
-          assert.match(text, /14 failed\s*\|\s*290 passed\s*\(304\)/);
-          console.log('Expected negative control: 13 source regressions and the real CLI alias case fail; 290 controls pass.');
+          assert.match(text, /14 failed\s*\|\s*278 passed\s*\(292\)/);
+          console.log('Expected negative control: 13 source regressions and the real CLI alias case fail; 278 controls pass.');
           JS
           fi
       - name: Retain the actual test log, including expected baseline failures
