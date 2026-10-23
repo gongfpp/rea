@@ -59,6 +59,7 @@ const LANGUAGE_BY_EXTENSION = new Map<string, string>([
   ["kt", "Kotlin"],
   ["kts", "Kotlin"],
   ["c", "C"],
+  ["C", "C++"],
   ["h", "C"],
   ["cpp", "C++"],
   ["hpp", "C++"],
@@ -68,6 +69,7 @@ const LANGUAGE_BY_EXTENSION = new Map<string, string>([
   ["cs", "C#"],
   ["php", "PHP"],
   ["m", "Objective-C"],
+  ["M", "Objective-C++"],
   ["mm", "Objective-C++"],
   ["sh", "Shell"],
   ["json", "JSON"],
@@ -345,8 +347,11 @@ export const detectReferenceSourceLanguage = (path: string): string | null => {
   if (lower.endsWith(".d.cts")) return "TypeScript";
 
   const parts = basenameParts(filename);
-  const extension = parts.ext.toLowerCase();
-  return LANGUAGE_BY_EXTENSION.get(extension) ?? null;
+  return (
+    LANGUAGE_BY_EXTENSION.get(parts.ext) ??
+    LANGUAGE_BY_EXTENSION.get(parts.ext.toLowerCase()) ??
+    null
+  );
 };
 
 /** Classify a reference source path deterministically. */

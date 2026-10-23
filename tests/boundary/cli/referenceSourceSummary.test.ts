@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect } from "vitest";
@@ -120,6 +121,73 @@ describe.skipIf(process.platform === "win32")(
         });
       },
     );
+  },
+);
+
+cliTest.skipIf(process.platform === "win32")(
+  "preserves case-sensitive source languages in complete graphs and summaries",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-reference-case-languages-");
+    const content = "int value = 1;\n";
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    const files = [
+      { path: "capital.C", language: "C++" },
+      { path: "lower.c", language: "C" },
+      { path: "objectiveCapital.M", language: "Objective-C++" },
+      { path: "objectiveLower.m", language: "Objective-C" },
+      { path: "cpp.cpp", language: "C++" },
+      { path: "objectiveCpp.mm", language: "Objective-C++" },
+      { path: "mixed.CpP", language: "C++" },
+      { path: "mixedObjective.mM", language: "Objective-C++" },
+    ];
+    await Promise.all(
+      files.map(({ path }) => writeFile(join(root, path), content)),
+    );
+    const complete = await cli.run({
+      arguments: ["import-reference-source", root, "--json"],
+      cwd: root,
+    });
+    expect(complete.exitCode, complete.stderr).toBe(0);
+    const graph = parseHistoricalSourceGraph(complete.json);
+    expect(graph.entries).toHaveLength(files.length);
+    for (const file of files) {
+      expect(
+        graph.entries.find(({ path }) => path === file.path),
+      ).toMatchObject({
+        ...file,
+        kind: "file",
+        sha256,
+        size: Buffer.byteLength(content),
+        content_state: "hashed",
+        classifications: ["source"],
+      });
+    }
+    const summary = await cli.run({
+      arguments: [
+        "import-reference-source",
+        root,
+        "--detail",
+        "summary",
+        "--json",
+      ],
+      cwd: root,
+    });
+    expect(summary.exitCode, summary.stderr).toBe(0);
+    expect(summary.json).toMatchObject({
+      manifest: createHistoricalSourceManifest(graph),
+      inventory_state: graph.inventory_state,
+      limitations: graph.limitations,
+      languages: ["C", "C++", "Objective-C", "Objective-C++"],
+      counts: { files: files.length, parse_failures: 0 },
+      outline: {
+        entries: expect.arrayContaining(
+          files.map((file) => expect.objectContaining(file)),
+        ),
+        omitted_entry_count: 0,
+      },
+    });
+    for (const { path } of files)
+      expect(await readFile(join(root, path), "utf8")).toBe(content);
   },
 );
 
