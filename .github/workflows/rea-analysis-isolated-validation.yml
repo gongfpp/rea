@@ -1,0 +1,339 @@
+# Fork-only validation of PR6496; not part of the upstream PR.
+name: Validate isolated REA example reports
+on:
+  push:
+    branches:
+      - verify/ci-example-isolated-6496
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  complete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ARTIFACT_PATH: build/rea-ci-demo
+    steps:
+      - name: Prepare isolated report directory
+        id: reports
+        shell: bash
+        run: |
+          directory=$(mktemp -d "${RUNNER_TEMP:?}/rea-analysis.XXXXXX")
+          printf 'directory=%s\n' "${directory}" >> "${GITHUB_OUTPUT:?}"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Seed stale workspace reports
+        shell: bash
+        run: |-
+          mkdir -p reports/rea
+          printf '%s\n' '{"stale":true}' > reports/rea/analysis.json
+          printf '0\n' > reports/rea/exit-code.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.22.1
+      - name: Install pinned REA
+        run: >
+          npm install --prefix "${RUNNER_TEMP}/rea-tool" --no-audit --no-fund
+          --ignore-scripts --save-exact rea-agents@6.7.0
+
+          echo "${RUNNER_TEMP}/rea-tool/node_modules/.bin" >> "${GITHUB_PATH}"
+      - name: Build a known artifact
+        id: build
+        run: |
+          # Replace this step with your reviewed build, keeping ARTIFACT_PATH in sync.
+          mkdir -p build/rea-ci-demo
+          printf '%s\n' '{"name":"rea-ci-demo","version":"1.0.0","type":"module","main":"index.js"}' > build/rea-ci-demo/package.json
+          printf '%s\n' 'export const message = "hello";' 'throw new Error("This artifact must not be executed.");' > build/rea-ci-demo/index.js
+      - name: Analyze and retain the original exit status
+        id: analyze
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: >
+          set +e
+
+          rea analyze-javascript-application
+          "${GITHUB_WORKSPACE}/${ARTIFACT_PATH}" --json --full-output \
+            > "${REPORT_DIR}/analysis.json" 2> "${REPORT_DIR}/analysis.stderr"
+          status=$?
+
+          set -e
+
+          printf '%s\n' "${status}" > "${REPORT_DIR}/exit-code.txt"
+
+          exit "${status}"
+      - name: Verify fresh reports and exclude stale workspace files
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+          CASE: complete
+        run: >-
+          node <<'NODE'
+
+          const assert = require('node:assert/strict');
+
+          const fs = require('node:fs');
+
+          const path = require('node:path');
+
+          const dir = process.env.REPORT_DIR;
+
+          assert.ok(dir.startsWith(path.join(process.env.RUNNER_TEMP,
+          'rea-analysis.')));
+
+          assert.equal(JSON.parse(fs.readFileSync('reports/rea/analysis.json',
+          'utf8')).stale, true);
+
+          const files = fs.readdirSync(dir).sort();
+
+          if (process.env.CASE === 'build_failure') {
+            assert.deepEqual(files, []);
+          } else {
+            assert.deepEqual(files, ['analysis.json', 'analysis.stderr', 'exit-code.txt']);
+            const data = JSON.parse(fs.readFileSync(path.join(dir, 'analysis.json'), 'utf8'));
+            const exit = Number(fs.readFileSync(path.join(dir, 'exit-code.txt'), 'utf8').trim());
+            if (process.env.CASE === 'complete') {
+              assert.equal(exit, 0);
+              assert.equal(data.ok, true);
+              assert.equal(data.data.normalized_result.statistics.parse_failures, 0);
+            } else {
+              assert.notEqual(exit, 0);
+              assert.equal(data.ok, false);
+            }
+          }
+
+          console.log(JSON.stringify({case: process.env.CASE, report_directory:
+          dir, files, stale_workspace_excluded: true}));
+
+          NODE
+      - name: Upload available reports, including after analysis failure
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rea-analysis-complete
+          path: ${{ steps.reports.outputs.directory }}
+          if-no-files-found: warn
+          retention-days: 7
+    name: complete
+  missing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ARTIFACT_PATH: build/missing-artifact
+    steps:
+      - name: Prepare isolated report directory
+        id: reports
+        shell: bash
+        run: |
+          directory=$(mktemp -d "${RUNNER_TEMP:?}/rea-analysis.XXXXXX")
+          printf 'directory=%s\n' "${directory}" >> "${GITHUB_OUTPUT:?}"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Seed stale workspace reports
+        shell: bash
+        run: |-
+          mkdir -p reports/rea
+          printf '%s\n' '{"stale":true}' > reports/rea/analysis.json
+          printf '0\n' > reports/rea/exit-code.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.22.1
+      - name: Install pinned REA
+        run: >
+          npm install --prefix "${RUNNER_TEMP}/rea-tool" --no-audit --no-fund
+          --ignore-scripts --save-exact rea-agents@6.7.0
+
+          echo "${RUNNER_TEMP}/rea-tool/node_modules/.bin" >> "${GITHUB_PATH}"
+      - name: Build a known artifact
+        id: build
+        run: |
+          # Replace this step with your reviewed build, keeping ARTIFACT_PATH in sync.
+          mkdir -p build/rea-ci-demo
+          printf '%s\n' '{"name":"rea-ci-demo","version":"1.0.0","type":"module","main":"index.js"}' > build/rea-ci-demo/package.json
+          printf '%s\n' 'export const message = "hello";' 'throw new Error("This artifact must not be executed.");' > build/rea-ci-demo/index.js
+      - name: Analyze and retain the original exit status
+        id: analyze
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: >
+          set +e
+
+          rea analyze-javascript-application
+          "${GITHUB_WORKSPACE}/${ARTIFACT_PATH}" --json --full-output \
+            > "${REPORT_DIR}/analysis.json" 2> "${REPORT_DIR}/analysis.stderr"
+          status=$?
+
+          set -e
+
+          printf '%s\n' "${status}" > "${REPORT_DIR}/exit-code.txt"
+
+          exit "${status}"
+      - name: Verify fresh reports and exclude stale workspace files
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+          CASE: missing
+        run: >-
+          node <<'NODE'
+
+          const assert = require('node:assert/strict');
+
+          const fs = require('node:fs');
+
+          const path = require('node:path');
+
+          const dir = process.env.REPORT_DIR;
+
+          assert.ok(dir.startsWith(path.join(process.env.RUNNER_TEMP,
+          'rea-analysis.')));
+
+          assert.equal(JSON.parse(fs.readFileSync('reports/rea/analysis.json',
+          'utf8')).stale, true);
+
+          const files = fs.readdirSync(dir).sort();
+
+          if (process.env.CASE === 'build_failure') {
+            assert.deepEqual(files, []);
+          } else {
+            assert.deepEqual(files, ['analysis.json', 'analysis.stderr', 'exit-code.txt']);
+            const data = JSON.parse(fs.readFileSync(path.join(dir, 'analysis.json'), 'utf8'));
+            const exit = Number(fs.readFileSync(path.join(dir, 'exit-code.txt'), 'utf8').trim());
+            if (process.env.CASE === 'complete') {
+              assert.equal(exit, 0);
+              assert.equal(data.ok, true);
+              assert.equal(data.data.normalized_result.statistics.parse_failures, 0);
+            } else {
+              assert.notEqual(exit, 0);
+              assert.equal(data.ok, false);
+            }
+          }
+
+          console.log(JSON.stringify({case: process.env.CASE, report_directory:
+          dir, files, stale_workspace_excluded: true}));
+
+          NODE
+      - name: Upload available reports, including after analysis failure
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rea-analysis-missing
+          path: ${{ steps.reports.outputs.directory }}
+          if-no-files-found: warn
+          retention-days: 7
+    name: missing
+  build_failure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ARTIFACT_PATH: build/rea-ci-demo
+    steps:
+      - name: Prepare isolated report directory
+        id: reports
+        shell: bash
+        run: |
+          directory=$(mktemp -d "${RUNNER_TEMP:?}/rea-analysis.XXXXXX")
+          printf 'directory=%s\n' "${directory}" >> "${GITHUB_OUTPUT:?}"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Seed stale workspace reports
+        shell: bash
+        run: |-
+          mkdir -p reports/rea
+          printf '%s\n' '{"stale":true}' > reports/rea/analysis.json
+          printf '0\n' > reports/rea/exit-code.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.22.1
+      - name: Install pinned REA
+        run: >
+          npm install --prefix "${RUNNER_TEMP}/rea-tool" --no-audit --no-fund
+          --ignore-scripts --save-exact rea-agents@6.7.0
+
+          echo "${RUNNER_TEMP}/rea-tool/node_modules/.bin" >> "${GITHUB_PATH}"
+      - name: Build a known artifact
+        id: build
+        run: |
+          # Replace this step with your reviewed build, keeping ARTIFACT_PATH in sync.
+          mkdir -p build/rea-ci-demo
+          printf '%s\n' '{"name":"rea-ci-demo","version":"1.0.0","type":"module","main":"index.js"}' > build/rea-ci-demo/package.json
+          printf '%s\n' 'export const message = "hello";' 'throw new Error("This artifact must not be executed.");' > build/rea-ci-demo/index.js
+
+          exit 42
+      - name: Analyze and retain the original exit status
+        id: analyze
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: >
+          set +e
+
+          rea analyze-javascript-application
+          "${GITHUB_WORKSPACE}/${ARTIFACT_PATH}" --json --full-output \
+            > "${REPORT_DIR}/analysis.json" 2> "${REPORT_DIR}/analysis.stderr"
+          status=$?
+
+          set -e
+
+          printf '%s\n' "${status}" > "${REPORT_DIR}/exit-code.txt"
+
+          exit "${status}"
+      - name: Verify fresh reports and exclude stale workspace files
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+          CASE: build_failure
+        run: >-
+          node <<'NODE'
+
+          const assert = require('node:assert/strict');
+
+          const fs = require('node:fs');
+
+          const path = require('node:path');
+
+          const dir = process.env.REPORT_DIR;
+
+          assert.ok(dir.startsWith(path.join(process.env.RUNNER_TEMP,
+          'rea-analysis.')));
+
+          assert.equal(JSON.parse(fs.readFileSync('reports/rea/analysis.json',
+          'utf8')).stale, true);
+
+          const files = fs.readdirSync(dir).sort();
+
+          if (process.env.CASE === 'build_failure') {
+            assert.deepEqual(files, []);
+          } else {
+            assert.deepEqual(files, ['analysis.json', 'analysis.stderr', 'exit-code.txt']);
+            const data = JSON.parse(fs.readFileSync(path.join(dir, 'analysis.json'), 'utf8'));
+            const exit = Number(fs.readFileSync(path.join(dir, 'exit-code.txt'), 'utf8').trim());
+            if (process.env.CASE === 'complete') {
+              assert.equal(exit, 0);
+              assert.equal(data.ok, true);
+              assert.equal(data.data.normalized_result.statistics.parse_failures, 0);
+            } else {
+              assert.notEqual(exit, 0);
+              assert.equal(data.ok, false);
+            }
+          }
+
+          console.log(JSON.stringify({case: process.env.CASE, report_directory:
+          dir, files, stale_workspace_excluded: true}));
+
+          NODE
+      - name: Upload available reports, including after analysis failure
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rea-analysis-build_failure
+          path: ${{ steps.reports.outputs.directory }}
+          if-no-files-found: warn
+          retention-days: 7
+    name: build_failure
