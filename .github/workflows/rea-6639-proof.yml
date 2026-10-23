@@ -1,0 +1,95 @@
+name: REA 6639 real WABT regression
+on:
+  workflow_dispatch:
+  push:
+    branches: [validation/wasm-glue-separators-6639]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [baseline-producer, fixed]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+      - name: Select only the old producer for the negative control
+        if: matrix.version == 'baseline-producer'
+        run: |
+          git restore --source=a7180370332350bc0f998fbd643888221759570e -- src/wasm/WasmGlueAdapter.ts
+          test "$(git diff --name-only)" = src/wasm/WasmGlueAdapter.ts
+      - name: Install pinned npm and locked project dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pinned-npm" npm@11.16.0
+          echo "$RUNNER_TEMP/pinned-npm/node_modules/.bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pinned-npm/node_modules/.bin/npm" ci
+      - name: Download exact real WABT tools
+        run: |
+          curl --fail --location --retry 3 https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz --output "$RUNNER_TEMP/wabt.tar.gz"
+          echo "84895407a6bbb80e918f33b16b2fb2206021c150b6bc9ff6f761263a745ab131  $RUNNER_TEMP/wabt.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/wabt"
+          tar -xzf "$RUNNER_TEMP/wabt.tar.gz" -C "$RUNNER_TEMP/wabt" --strip-components=1
+          echo "REA_WABT_BIN_DIRECTORY=$RUNNER_TEMP/wabt/bin" >> "$GITHUB_ENV"
+      - name: Build exact selected producer
+        run: npm run build:cached
+      - name: Exercise the same regression tests
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          mkdir -p validation-results
+          set +e
+          npm run test:local -- src/wasm/WabtOutput.test.ts --reporter=json --outputFile=validation-results/source.json > validation-results/source.log 2>&1
+          result=$?
+          set -e
+          RESULT="$result" node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const r = JSON.parse(fs.readFileSync('validation-results/source.json', 'utf8'));
+          const baseline = process.env.VERSION === 'baseline-producer';
+          assert.equal(Number(process.env.RESULT), baseline ? 1 : 0);
+          assert.equal(r.numFailedTests, baseline ? 6 : 0);
+          assert.equal(r.numPassedTests, baseline ? 20 : 26);
+          assert.equal(r.numTotalTests, 26);
+          console.log(JSON.stringify({version: process.env.VERSION, failed: r.numFailedTests, passed: r.numPassedTests}));
+          JS
+      - name: Exercise real CLI and stdio MCP with WABT 1.0.42
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          set +e
+          node scripts/verify-wasm-artifact.mjs --require-tools > validation-results/real.stdout 2> validation-results/real.stderr
+          result=$?
+          set -e
+          RESULT="$result" node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const baseline = process.env.VERSION === 'baseline-producer';
+          assert.equal(Number(process.env.RESULT), baseline ? 1 : 0);
+          if (baseline) {
+            const log = fs.readFileSync('validation-results/real.stderr', 'utf8');
+            assert.match(log, /WABT real-tool verification failed/);
+            assert.match(log, /AssertionError/);
+            assert.ok(log.includes('module.wasm?query=a'), 'must reach the missing multiline-reference assertion, not fail tool startup');
+            assert.ok(!log.includes('Provider workspace leaked'), 'cleanup failure is not an accepted negative control');
+            console.log(JSON.stringify({version: process.env.VERSION, expected_missing_multiline_reference: true}));
+          } else {
+            const r = JSON.parse(fs.readFileSync('validation-results/real.stdout', 'utf8'));
+            assert.equal(r.status, 'passed');
+            assert.equal(r.tool_profile, 'wabt@1.0.42');
+            assert.ok(r.cases >= 14);
+            console.log(JSON.stringify({version: process.env.VERSION, status: r.status, cases: r.cases, tool_profile: r.tool_profile}));
+          }
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-glue-${{ matrix.version }}
+          path: validation-results/
+          if-no-files-found: error
