@@ -1,0 +1,111 @@
+name: Verify PR6778 ambient route proofs
+
+on:
+  push:
+    branches: [verify/pr6778-ambient-proof-20261025]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, feature]
+    env:
+      BASE: ab720b42163e33cba519518dedc67c7e11346b71
+      FEATURE: 5cf492676e043c3ba0a0d473531079fd5282d11e
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - name: Prepare identical tests against the pinned producer
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$VARIANT" = baseline ]; then
+            git diff --binary "$BASE" "$FEATURE" -- \
+              src/domain/javascript/javascriptRouteScan.test.ts \
+              src/domain/javascript/javascriptRouteInventory.test.ts \
+              tests/acceptance/javascriptRoutesCli.test.ts > "$RUNNER_TEMP/regression.patch"
+            git switch --detach "$BASE"
+            git apply "$RUNNER_TEMP/regression.patch"
+            git diff --exit-code HEAD -- src/domain/javascript/javascriptRouteScan.ts
+          else
+            git diff --exit-code "$FEATURE" HEAD -- \
+              src/domain/javascript/javascriptRouteScan.ts \
+              src/domain/javascript/javascriptRouteScan.test.ts \
+              src/domain/javascript/javascriptRouteInventory.test.ts \
+              tests/acceptance/javascriptRoutesCli.test.ts
+          fi
+          git rev-parse HEAD
+          git status --short
+      - name: Install the pinned toolchain and dependencies
+        run: |
+          npm install --global npm@11.16.0
+          node --version
+          npm --version
+          npm ci
+      - name: Build the real public CLI
+        run: npm run build:runtime
+      - name: Run producer, inventory and real CLI regressions
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/6778-evidence"
+          set +e
+          node scripts/run-exact-tests.mjs run \
+            --reporter=json \
+            --outputFile="$RUNNER_TEMP/6778-evidence/tests.json" \
+            src/domain/javascript/javascriptRouteScan.test.ts \
+            src/domain/javascript/javascriptRouteInventory.test.ts \
+            src/domain/javascript/javascriptRouteResultBudget.test.ts \
+            tests/acceptance/javascriptRoutesCli.test.ts \
+            > "$RUNNER_TEMP/6778-evidence/tests.log" 2>&1
+          code=$?
+          set -e
+          export TEST_EXIT="$code"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const report = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/6778-evidence/tests.json`, 'utf8'));
+          const assertions = report.testResults.flatMap(result => result.assertionResults);
+          const failed = assertions.filter(result => result.status === 'failed');
+          const producer = failed.filter(result => result.fullName.includes('keeps script program-var index proofs unknown'));
+          const inventory = failed.filter(result => result.fullName.includes('marks unproven index interpretation'));
+          const cli = failed.filter(result => result.fullName === 'retains resolved index routes and reports unresolved flags through the public CLI');
+          const summary = {
+            variant: process.env.VARIANT,
+            exit: Number(process.env.TEST_EXIT),
+            total: report.numTotalTests,
+            passed: report.numPassedTests,
+            failed: report.numFailedTests,
+            producerFailures: producer.length,
+            inventoryFailures: inventory.length,
+            cliFailures: cli.length,
+          };
+          console.log(JSON.stringify(summary));
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/6778-evidence/summary.json`, JSON.stringify(summary, null, 2));
+          if (report.numTotalTests < 303 || report.numPendingTests !== 0) throw new Error('Incomplete regression run');
+          if (process.env.VARIANT === 'baseline') {
+            if (summary.exit !== 1 || failed.length !== 10 || producer.length !== 7 || inventory.length !== 2 || cli.length !== 1) throw new Error('Unexpected baseline failures');
+            if (!cli[0].failureMessages.some(message => message.includes('to deeply equal'))) throw new Error('CLI did not fail on the expected route semantics');
+          } else if (summary.exit !== 0 || failed.length !== 0) {
+            throw new Error('Feature regression failed');
+          }
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ambient-route-${{ matrix.variant }}
+          path: ${{ runner.temp }}/6778-evidence
+          if-no-files-found: warn
