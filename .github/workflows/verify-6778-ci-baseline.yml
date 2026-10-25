@@ -1,0 +1,100 @@
+name: Diagnose PR6778 exact CI base
+
+on:
+  push:
+    branches: [verify/pr6778-ci-baseline-20261025]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-ci-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, feature]
+    env:
+      BASE: e9b21aadc5791e37a32a455fc6b6d65050a6a1c8
+      FEATURE: 5cf492676e043c3ba0a0d473531079fd5282d11e
+      EXPECTED_MERGE_TREE: 447a91754c5c4a527e029e3f3e720317efa80612
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recreate the exact upstream CI source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/morluto/rea.git "$BASE"
+          if [ "$VARIANT" = baseline ]; then
+            git switch --detach "$BASE"
+          else
+            git switch --detach "$FEATURE"
+            git -c user.name=verification -c user.email=verification@localhost \
+              merge --no-ff --no-edit "$BASE"
+            test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_MERGE_TREE"
+          fi
+          git diff --exit-code "$BASE" HEAD -- \
+            tests/boundary/mcp/javascriptAnalysisResources.test.ts \
+            tests/acceptance/applications/javascriptContentDeduplicatedModulePaths.test.ts
+          git log -1 --format='%H %T'
+          test -z "$(git status --porcelain)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - name: Install pinned dependencies
+        run: |
+          npm install --global npm@11.16.0
+          node --version
+          npm --version
+          npm ci
+      - name: Build the real CLI and MCP server
+        run: npm run build
+      - name: Run the two original CI files without changing their assertions
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/ci-diagnosis"
+          set +e
+          node scripts/run-exact-tests.mjs run \
+            --reporter=json \
+            --outputFile="$RUNNER_TEMP/ci-diagnosis/tests.json" \
+            tests/boundary/mcp/javascriptAnalysisResources.test.ts \
+            tests/acceptance/applications/javascriptContentDeduplicatedModulePaths.test.ts \
+            > "$RUNNER_TEMP/ci-diagnosis/tests.log" 2>&1
+          code=$?
+          set -e
+          export TEST_EXIT="$code"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const root = `${process.env.RUNNER_TEMP}/ci-diagnosis`;
+          const report = JSON.parse(fs.readFileSync(`${root}/tests.json`, 'utf8'));
+          const failures = report.testResults.flatMap(file => file.assertionResults)
+            .filter(test => test.status === 'failed')
+            .map(test => ({ name: test.fullName, messages: test.failureMessages }));
+          const summary = {
+            variant: process.env.VARIANT,
+            exit: Number(process.env.TEST_EXIT),
+            total: report.numTotalTests,
+            passed: report.numPassedTests,
+            failed: report.numFailedTests,
+            pending: report.numPendingTests,
+            failures,
+          };
+          fs.writeFileSync(`${root}/summary.json`, JSON.stringify(summary, null, 2));
+          console.log(JSON.stringify(summary));
+          if (summary.total !== 4 || summary.pending !== 0) throw new Error('Incomplete CI diagnosis');
+          JS
+          exit "$code"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-diagnosis-${{ matrix.variant }}
+          path: ${{ runner.temp }}/ci-diagnosis
+          if-no-files-found: warn
