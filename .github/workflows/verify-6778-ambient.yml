@@ -57,7 +57,7 @@ jobs:
           npm --version
           npm ci
       - name: Build the real public CLI
-        run: npm run build:runtime
+        run: npm run build
       - name: Run producer, inventory and real CLI regressions
         shell: bash
         run: |
