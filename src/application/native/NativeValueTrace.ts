@@ -146,7 +146,7 @@ export const traceNativeValues = async (
           "Cross-function target digest mismatch",
         ).retainPartialObservation(evidence),
       );
-    const evidenceId = evidence.evidence_id;
+    const evidenceId = execution.value.evidenceId ?? evidence.evidence_id;
     procedures.push({
       address,
       depth: next.depth,

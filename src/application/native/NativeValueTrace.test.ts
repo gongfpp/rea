@@ -1041,3 +1041,47 @@ describe("native value validation failure provenance", () => {
     },
   );
 });
+
+describe("native value trace retained source provenance", () => {
+  it("uses retained source Evidence IDs after snapshot replay", async () => {
+    const retained = new Map<string, string>();
+    const replay: AnalysisOperationPort = {
+      execute: async (operation, parameters, options) => {
+        const result = await analysis.execute(operation, parameters, options);
+        if (!result.ok || operation !== "analyze_function") return result;
+        const evidence = createAnalysisExecutionEvidence(
+          operation,
+          parameters,
+          result.value,
+          "observed",
+        );
+        retained.set(String(parameters.procedure), evidence.evidence_id);
+        return ok({
+          ...result.value,
+          evidenceId: evidence.evidence_id,
+          limitations: [
+            ...result.value.limitations,
+            "Loaded from a local REA analysis snapshot; this call did not re-run the provider.",
+          ],
+        });
+      },
+    };
+    const result = await traceNativeValues(replay, {
+      procedure: "0x1000",
+      max_depth: 1,
+    });
+    if (!result.ok) throw result.error;
+    const trace = nativeValueTraceSchema.parse(result.value);
+    expect(retained.size).toBe(2);
+    for (const procedure of trace.procedures) {
+      expect(procedure.evidence_id).toBe(retained.get(procedure.address));
+    }
+    for (const node of trace.nodes) {
+      expect(node.evidence_id).toBe(retained.get(node.procedure));
+    }
+    const retainedIds = new Set(retained.values());
+    for (const edge of trace.edges) {
+      expect(retainedIds.has(edge.evidence_id)).toBe(true);
+    }
+  });
+});
