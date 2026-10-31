@@ -1,3 +1,5 @@
+import type { SavedAnalysisSnapshotPartialObservation } from "./savedAnalysisSnapshot.js";
+import type { AnalysisSettingLimit } from "./analysisSettings.js";
 import type { JsonValue } from "./jsonValue.js";
 
 /** Stable tags exposed by safe analysis-error projections. */
@@ -57,6 +59,7 @@ export interface AnalysisErrorOptions extends ErrorOptions {
   readonly cleanupPrimary?: AnalysisError | undefined;
   /** Producer-owned, caller-safe facts retained through every typed projection. */
   readonly diagnostics?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly limit?: AnalysisSettingLimit | undefined;
   readonly capturedOutput?: AnalysisCapturedOutput | undefined;
   readonly cleanup?: AnalysisCleanupObservation | undefined;
   readonly partialObservation?: AnalysisPartialObservation | undefined;
@@ -69,6 +72,12 @@ export interface AnalysisCleanupResourceOwner {
 
 /** Base class for expected analysis, provider, and session failures. */
 export abstract class AnalysisError extends Error {
+  limit: Readonly<AnalysisSettingLimit> | undefined;
+  /** Bind the accepted setting at its producing boundary. */
+  bindLimit(limit: AnalysisSettingLimit): this {
+    this.limit = Object.freeze({ ...limit });
+    return this;
+  }
   readonly #cleanupPrimary: AnalysisError | undefined;
   // Undefined means unbound; a bound empty set records confirmed completion.
   #cleanupDependencies: Set<AnalysisError> | undefined;
@@ -87,6 +96,7 @@ export abstract class AnalysisError extends Error {
   constructor(message: string, options?: AnalysisErrorOptions) {
     super(message, options);
     this.#cleanupPrimary = options?.cleanupPrimary;
+    if (options?.limit !== undefined) this.bindLimit(options.limit);
     this.diagnostics =
       options?.diagnostics === undefined
         ? undefined
@@ -241,6 +251,7 @@ import type {
 } from "./process/processCapture.js";
 import type { FileOffsetPartialObservation } from "./native/fileOffsetPartialObservation.js";
 import type { NativeCallPartialObservation } from "./native/nativeCallPartialObservation.js";
+import type { HopperCallerReconciliationPartial } from "./native/hopperCallerReconciliation.js";
 import type { ElectronActivePartialObservation } from "./javascript/electronActiveObservation.js";
 import type { JavaScriptRuntimeObservation } from "./javascript/javascriptRuntimeObservation.js";
 import type {
@@ -260,7 +271,10 @@ import type {
   AdbPackagePullPartialObservation,
   AdbDisplayPartialObservation,
 } from "./adb/adbDeviceAnalysis.js";
-import type { InspectSignature } from "./native/nativeInspection.js";
+import type {
+  InspectMacho,
+  InspectSignature,
+} from "./native/nativeInspection.js";
 import type { NativeUiObservationResult } from "./native/nativeUiObservation.js";
 import type { BinaryLayout } from "./native/binaryLayout.js";
 import type {
@@ -274,6 +288,7 @@ import type {
   WebSourceMapFetchPartialObservation,
 } from "./webBundleAnalysis.js";
 import type { WebExecutionObservation } from "./webExecution.js";
+import type { WebSourceMapReport } from "./webSourceLocation.js";
 import type { WebEventListenersObservation } from "./webEventListeners.js";
 
 import type { NativeLoadImagePartialObservation } from "./native/nativeLoadImage.js";
@@ -285,8 +300,14 @@ import type { WebNetworkCapture } from "./webNetworkCapture.js";
 import type { FridaDeviceList, FridaProcessList } from "./fridaDiscovery.js";
 import type { CutterBridgeDiscovery } from "./cutterDiscovery.js";
 
+import type { WebTraceObservation } from "./webTraceObservation.js";
+import type { WebArtifactAcquisition } from "./webArtifactAcquisition.js";
+
 /** Provider-neutral evidence collected before a typed analysis failure. */
 export type AnalysisPartialObservation =
+  | SavedAnalysisSnapshotPartialObservation
+  | WebArtifactAcquisition
+  | WebTraceObservation
   | CutterBridgeDiscovery
   | FridaDeviceList
   | FridaProcessList
@@ -297,6 +318,7 @@ export type AnalysisPartialObservation =
   | FileSnapshotPartialObservation
   | PartialProcessCaptureObservation
   | NativeCallPartialObservation
+  | HopperCallerReconciliationPartial
   | FileOffsetPartialObservation
   | ElectronActivePartialObservation
   | BrowserScenarioPartialObservation
@@ -304,6 +326,7 @@ export type AnalysisPartialObservation =
   | WebBundleAnalysis
   | WebBundleAcquisitionPartialObservation
   | WebSourceMapFetchPartialObservation
+  | WebSourceMapReport
   | WebExecutionObservation
   | WebEventListenersObservation
   | JavaScriptRuntimeObservation
@@ -319,6 +342,7 @@ export type AnalysisPartialObservation =
   | FirmwarePartialObservation
   | NativeUiObservationResult
   | InspectSignature
+  | InspectMacho
   | ElectronPagePartialObservation
   | AdbActivityStartPartialObservation
   | AdbAcquiredFilePartialObservation

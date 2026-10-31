@@ -284,7 +284,6 @@ it.each([
             "-e",
             `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});`,
           ],
-          expectedCommand: null,
         });
       },
     );
@@ -386,6 +385,10 @@ const assertModeOutcome = (
     expect(result).toMatchObject({
       error: { capturedOutput: { stderr: "module.wasm: invalid bytes\n" } },
     });
+  if (mode === "malformed")
+    expect(result).toMatchObject({
+      error: { capturedOutput: { stdout: "unexpected producer output" } },
+    });
   if (mode === "malformed-wat" || mode === "wat-warning")
     expect(result).toMatchObject({
       error: {
@@ -433,7 +436,12 @@ it("returns actionable unavailable without creating a workspace when tools are a
     ok: false,
     error: {
       _tag: "AnalysisCapabilityUnavailableError",
-      userMessage: expect.stringContaining("REA_WABT_BIN_DIRECTORY"),
+      reason: "directory_not_absolute",
+      userMessage: "WABT configuration cannot be used",
+      diagnostics: {
+        code: "directory_not_absolute",
+        setting: "REA_WABT_BIN_DIRECTORY",
+      },
     },
   });
 });
@@ -497,7 +505,6 @@ it.each([
             "-e",
             `process.stdout.write(${JSON.stringify(selected ? stdout : "1.0.42\n")}); process.stderr.write(${JSON.stringify(selected ? stderr : "")}); process.exit(${String(selected ? exitCode : 0)});`,
           ],
-          expectedCommand: null,
         });
       },
     );
@@ -564,7 +571,6 @@ it("retries a retained input descriptor before admitting the next WABT operation
           "-e",
           `process.stdout.write(${JSON.stringify(stdout)}); process.exit(0);`,
         ],
-        expectedCommand: null,
       });
       return launched;
     },
@@ -768,7 +774,6 @@ const launchWabtOutcome = async (
     hostEnvironment: nodeHostEnvironment(input.hostEnvironment),
     command: process.execPath,
     arguments: ["-e", script],
-    expectedCommand: null,
   });
   if (!version && mode === "cancelled") {
     setImmediate(() => controller.abort());
@@ -793,7 +798,6 @@ it("enforces a selected command deadline and completes a corrected retry after c
             "-e",
             'setTimeout(() => process.stdout.write("1.0.42\\n"), 250)',
           ],
-          expectedCommand: null,
         });
       }
       return launchWabtOutcome(input, "success", {
@@ -1064,12 +1068,25 @@ it.each([
       fileCloseFailure.failFirst = true;
     }
     try {
-      const result = await provider.inspect({
-        path: fixture.path,
-        candidate_paths:
-          stage === "candidate admission" ? [candidate, missing] : [candidate],
-        glue_paths: stage === "candidate admission" ? [] : [gluePath],
-      });
+      const result = await provider.inspect(
+        {
+          path: fixture.path,
+          candidate_paths:
+            stage === "candidate admission"
+              ? [candidate, missing]
+              : [candidate],
+          glue_paths: stage === "candidate admission" ? [] : [gluePath],
+        },
+        { commandTimeoutMs: 42000 },
+      );
+      if (!result.ok) {
+        expect(result.error.partialObservation).toMatchObject({
+          parameters: expect.not.objectContaining({
+            command_timeout_ms: expect.anything(),
+          }),
+          normalized_result: { tool_profile: { timeout_ms: 42000 } },
+        });
+      }
       if (result.ok) throw new Error("Expected the selected failure stage");
       expect(result.error._tag).toBe(
         validation === "rejected-by-selected-profile"
@@ -1224,7 +1241,6 @@ it("reports WABT output beyond the budget as a resource constraint with a bounde
         hostEnvironment: nodeHostEnvironment(input.hostEnvironment),
         command: process.execPath,
         arguments: ["-e", script],
-        expectedCommand: null,
       });
     },
   );
@@ -1289,7 +1305,6 @@ it("does not attribute wasm-objdump output to a wasm2wat launch failure", async 
         hostEnvironment: nodeHostEnvironment(input.hostEnvironment),
         command: process.execPath,
         arguments: ["-e", script],
-        expectedCommand: null,
       });
     },
   );
